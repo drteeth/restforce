@@ -10,8 +10,17 @@ module Restforce
       #
       # Returns a Faye::Subscription
       def subscribe(channels, options = {}, &block)
-        Array(channels).each { |channel| replay_handlers[channel] = options[:replay] }
-        faye.subscribe Array(channels).map { |channel| "/topic/#{channel}" }, &block
+        Array(channels).each { |channel|
+          replay_handlers[channel] = options.fetch(:replay, -2)
+        }
+        channel_topics = Array(channels).map { |channel| "/topic/#{channel}" }
+        faye.subscribe(channel_topics, &block)
+      end
+
+      # Registers a block which will be called once we recieve a Disconnect message from SalesForce
+      # This block can be used to restart the subscription
+      def on_disconnect(&block)
+        @disconnect_block = block
       end
 
       # Public: Faye client to use for subscribing to PushTopics
@@ -35,11 +44,32 @@ module Restforce
           end
 
           client.add_extension ReplayExtension.new(replay_handlers)
+          client.add_extension OnDisconnectExtension.new(@disconnect_block) if @disconnect_block
         end
       end
 
       def replay_handlers
         @_replay_handlers ||= {}
+      end
+
+      class OnDisconnectExtension
+        def initialize(disconnect_block)
+          @disconnect_block = disconnect_block
+        end
+
+        def incoming(message, callback)
+          ap message
+          Restforce.log ("OnDisconnectExtension - recieved a message #{message}")
+          if message['channel'] == "/meta/disconnect"
+            Restforce.log ("OnDisconnectExtension - recieved a disconenct message #{message}")
+            @disconnect_block.call
+          end
+          callback.call(message)
+        end
+
+        def outgoing(message, callback)
+          callback.call(message)
+        end
       end
 
       class ReplayExtension
@@ -75,7 +105,7 @@ module Restforce
           }
 
           # Carry on and send the message to the server
-          callback.call message
+          callback.call(message)
         end
 
         private
